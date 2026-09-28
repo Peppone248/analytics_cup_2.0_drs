@@ -2,14 +2,18 @@ import pandas as pd
 import json
 import numpy as np
 from scipy.stats import pearsonr
+from utils import unique_teams_dict
 
 
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', None)
 
-path_to_matches = r"E:\Projects\opendata\data\matches\1899585\1899585_match.json"
-path_to_events = r"E:\Projects\opendata\data\matches\1899585\1899585_dynamic_events.csv"
-path_to_tracking = r"E:\Projects\opendata\data\matches\1899585\1899585_tracking_extrapolated.jsonl"
+match_id = 1899585
+base = rf"E:\Projects\analytics_cup_2.0_drs\data\matches\{match_id}"
+
+path_to_matches = f"{base}\\{match_id}_match.json"
+path_to_events = f"{base}\\{match_id}_dynamic_events.csv"
+path_to_tracking = f"{base}\\{match_id}_tracking_extrapolated.jsonl"
 
 def nearest_defender(run_row, frame_lookup, player_to_team):
     frame_start = int(run_row["frame_start"])
@@ -154,11 +158,7 @@ profile = layer3.groupby("defender_id").agg(
 profile = profile.sort_values("n_runs", ascending=False)
 print(profile.to_string())
 
-
-match_data["teams"] = [
-    match_data["home_team"],
-    match_data["away_team"]
-]
+match_data = unique_teams_dict(match_data=match_data)
 
 # mappa defender_id → nome e squadra
 id_to_name = {p["id"]: p["short_name"] for p in match_data["players"]}
@@ -173,3 +173,6 @@ cols = ["defender_name", "team", "n_runs", "targeted_rate",
         "received_rate", "lead_to_shot_rate", "avg_separation_start", 
         "avg_separation_gain"]
 print(profile[cols].to_string(index=False))
+
+layer3.to_csv(f"{base}/layer3_{match_id}.csv", index=False)
+print(f"Salvato layer3_{match_id}.csv")
