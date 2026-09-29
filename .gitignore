@@ -1,0 +1,26 @@
+# Global/macOS
+.DS_Store
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv
+.env
+.pytest_cache/
+
+# IDEs
+.idea/
+.vscode/
+
+# Project-specific
+archive/
+notebooks/exploratory/
+
+.agents/
+
+# MkDocs
+site/
+.cache/
