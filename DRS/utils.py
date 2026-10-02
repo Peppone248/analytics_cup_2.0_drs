@@ -30,6 +30,11 @@ def build_player_to_team(match_data):
 
     return player_to_team
 
+def extract_team_ids(match_data):
+    home_id = match_data["home_team"]["id"]
+    away_id = match_data["away_team"]["id"]
+    return (home_id, away_id)
+
 def build_lookup(frames):
     frame_lookup = {f["frame"]: f for f in frames}
     return frame_lookup
