@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost Viewer</title>
+<style>
+  :root {
+    --bg: #0b0e13; --panel: rgba(14, 18, 25, 0.82); --line: #262d38; --text: #e9edf2;
+    --muted: #97a1ae; --def: #3d7be0; --att: #e04a5c; --ok: #38d9a9; --warn: #f5a623;
+    --bad: #ff4d6d; --gray: #8a93a0; --accent: #ffd54a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 "Inter", system-ui, -apple-system, Segoe UI, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #vignette { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .4s;
+    background: radial-gradient(ellipse 62% 70% at 50% 46%, transparent 55%, rgba(5,7,10,.88) 100%); }
+  #vignette.on { opacity: 1; }
+  .panel { position: fixed; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+  #info { top: 14px; left: 14px; padding: 13px 15px; max-width: min(430px, calc(100vw - 28px)); }
+  #info h1 { font-size: 15px; margin: 0 0 3px; font-weight: 650; letter-spacing: -.01em; }
+  #info .sub { color: var(--muted); font-size: 12px; }
+  #state { margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  #state .big { font-size: 26px; font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .pill { padding: 3px 9px; border-radius: 99px; font-size: 11px; font-weight: 750; letter-spacing: .05em;
+    transition: background .2s; }
+  #radar { top: 14px; right: 14px; padding: 8px; }
+  #radar canvas { display: block; width: 240px; height: 240px; border-radius: 8px; }
+  #radar .cap { color: var(--muted); font-size: 11px; text-align: center; margin-top: 5px; }
+  #bottom { left: 14px; right: 14px; bottom: 14px; padding: 10px 12px; }
+  #controls { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+  button, select { background: #1a2029; color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover, select:hover { border-color: #3a4554; }
+  button.on { background: #2a3443; border-color: #4d5d74; }
+  #slider { flex: 1 1 200px; accent-color: var(--accent); min-width: 120px; }
+  #time { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 56px; text-align: right; }
+  #chart { width: 100%; height: 92px; display: block; margin-top: 8px; }
+  #legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 11px; margin-top: 4px; }
+  #legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .sep { width: 1px; height: 22px; background: var(--line); }
+  @media (max-width: 760px) {
+    #radar canvas { width: 150px; height: 150px; }
+    #info { max-width: calc(100vw - 190px); }
+    #chart { height: 64px; }
+  }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="vignette"></div>
+
+<div id="info" class="panel">
+  <h1 id="title"></h1>
+  <div class="sub" id="subtitle"></div>
+  <div id="state">
+    <span class="big" id="errv">–</span>
+    <span class="pill" id="statepill">–</span>
+    <span class="sub" id="wv"></span>
+  </div>
+  <div class="sub" id="who" style="margin-top:7px"></div>
+</div>
+
+<div id="radar" class="panel">
+  <canvas id="radarc" width="480" height="480"></canvas>
+  <div class="cap" id="radarcap">radar · pitch-up</div>
+</div>
+
+<div id="bottom" class="panel">
+  <div id="controls">
+    <select id="clip"></select>
+    <select id="defender" title="Focal defender: whose beliefs are shown (★ = nearest at run start). Click a defender in 3D, or [ ]"></select>
+    <button id="play">▶</button>
+    <input id="slider" type="range" min="0" max="0" value="0">
+    <span id="time">0.0 s</span>
+    <span class="sep"></span>
+    <select id="speed"><option value="0.25">0.25×</option><option value="0.5" selected>0.5×</option><option value="1">1×</option></select>
+    <button data-cam="broadcast" class="cam on">Broadcast</button>
+    <button data-cam="top" class="cam">Top</button>
+    <button data-cam="follow" class="cam">Follow</button>
+    <button data-cam="pov" class="cam">POV</button>
+    <span class="sep"></span>
+    <button id="ghostsAll" class="on">All ghosts</button>
+    <button id="trails" class="on">Trails</button>
+    <button id="labels" class="on">Numbers</button>
+  </div>
+  <canvas id="chart"></canvas>
+  <div id="legend">
+    <span><i style="background:var(--def)"></i>FoV weight w (runner seen)</span>
+    <span><i style="background:var(--att)"></i>ghost error (m)</span>
+    <span><i style="background:var(--gray)"></i>A_cov (thesis)</span>
+    <span><i style="background:var(--ok)"></i>aware</span>
+    <span><i style="background:var(--warn)"></i>uncertain</span>
+    <span><i style="background:var(--bad)"></i>false belief</span>
+    <span style="margin-left:auto">ghosts = the selected defender's memory of each attacker (pose at last sighting) · click a defender or use [ ] to switch</span>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const CLIPS = /*__DATA__*/[];
+
+// ------------------------------------------------------------------ palette
+const TEAM = {
+  def: { shirt: 0x3d7be0, shorts: 0x14233f, socks: 0x3d7be0, label: "#3d7be0" },
+  att: { shirt: 0xe04a5c, shorts: 0x3d0f17, socks: 0xe04a5c, label: "#e04a5c" },
+};
+const SKIN = 0xd3d8de;                    // neutral mannequin tone
+const STATE_HEX = [0x38d9a9, 0xf5a623, 0xff4d6d, 0x8a93a0];
+const STATE_NAME = ["AWARE", "UNCERTAIN", "FALSE BELIEF", "NEVER SEEN"];
+const STATE_CSS = ["#38d9a9", "#f5a623", "#ff4d6d", "#8a93a0"];
+const errHex = e => e == null ? 0x8a93a0 : e < 1.5 ? STATE_HEX[0] : e < 4 ? STATE_HEX[1] : STATE_HEX[2];
+const V = (x, y, z = 0) => new THREE.Vector3(x, z, -y);   // pitch (x, y, up) -> three
+// hex colours are sRGB; materials work in linear space (renderer outputs sRGB)
+const C = h => new THREE.Color(h).convertSRGBToLinear();
+
+// ------------------------------------------------------------------ renderer / scene
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.95;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+stage.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0e13);
+scene.fog = new THREE.Fog(0x0b0e13, 80, 170);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 500);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.maxPolarAngle = Math.PI * 0.495;
+scene.add(new THREE.HemisphereLight(0xe6eeff, 0x1c3322, 0.75));
+const sun = new THREE.DirectionalLight(0xfff4e0, 1.25);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -28, right: 28, top: 28, bottom: -28, near: 1, far: 120 });
+sun.shadow.bias = -0.0004;
+scene.add(sun, sun.target);
+
+// ------------------------------------------------------------------ pitch (canvas texture)
+function pitchTexture() {
+  const M = 4, W = 105 + 2 * M, H = 68 + 2 * M, s = 20;
+  const c = document.createElement("canvas"); c.width = W * s; c.height = H * s;
+  const g = c.getContext("2d");
+  const X = x => (x + 52.5 + M) * s, Y = y => (34 + M - y) * s;
+  g.fillStyle = "#1c5230"; g.fillRect(0, 0, c.width, c.height);
+  for (let i = 0; i < 14; i++) {
+    g.fillStyle = i % 2 ? "#22623a" : "#1d5833";
+    g.fillRect(X(-52.5 + i * 105 / 14), Y(34), 105 / 14 * s + 1, 68 * s);
+  }
+  // grain
+  const img = g.getImageData(0, 0, c.width, c.height), d = img.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (Math.random() - 0.5) * 14; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  g.putImageData(img, 0, 0);
+  g.strokeStyle = "rgba(240,244,240,0.92)"; g.lineWidth = 0.12 * s; g.lineCap = "round";
+  const rect = (x0, y0, x1, y1) => g.strokeRect(X(x0), Y(y1), (x1 - x0) * s, (y1 - y0) * s);
+  const line = (x0, y0, x1, y1) => { g.beginPath(); g.moveTo(X(x0), Y(y0)); g.lineTo(X(x1), Y(y1)); g.stroke(); };
+  const arc = (cx, cy, r, a0, a1) => { g.beginPath(); g.arc(X(cx), Y(cy), r * s, -a1, -a0); g.stroke(); };
+  rect(-52.5, -34, 52.5, 34); line(0, -34, 0, 34); arc(0, 0, 9.15, 0, 2 * Math.PI);
+  g.fillStyle = "rgba(240,244,240,0.92)";
+  for (const p of [[0, 0], [-41.5, 0], [41.5, 0]]) { g.beginPath(); g.arc(X(p[0]), Y(p[1]), 0.22 * s, 0, 2 * Math.PI); g.fill(); }
+  for (const sd of [-1, 1]) {
+    const x0 = sd * 52.5, x1 = sd * 36, x2 = sd * 47;
+    rect(Math.min(x0, x1), -20.16, Math.max(x0, x1), 20.16);
+    rect(Math.min(x0, x2), -9.16, Math.max(x0, x2), 9.16);
+    const a = Math.acos(5.5 / 9.15);
+    if (sd > 0) arc(41.5, 0, 9.15, Math.PI - a, Math.PI + a); else arc(-41.5, 0, 9.15, -a, a);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.encoding = THREE.sRGBEncoding; t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return { t, W, H };
+}
+(function buildPitch() {
+  const apron = new THREE.Mesh(new THREE.PlaneGeometry(160, 120), new THREE.MeshStandardMaterial({ color: C(0x163f26), roughness: 1 }));
+  apron.rotation.x = -Math.PI / 2; apron.position.y = -0.01; apron.receiveShadow = true; scene.add(apron);
+  const { t, W, H } = pitchTexture();
+  const grass = new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshStandardMaterial({ map: t, roughness: 0.95 }));
+  grass.rotation.x = -Math.PI / 2; grass.receiveShadow = true; scene.add(grass);
+  const post = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
+  const net = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.18 });
+  for (const sd of [-1, 1]) {
+    for (const y of [-3.66, 3.66]) {
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.44, 10), post);
+      p.position.copy(V(sd * 52.5, y, 1.22)); p.castShadow = true; scene.add(p);
+    }
+    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 7.32, 10), post);
+    bar.rotation.x = Math.PI / 2; bar.position.copy(V(sd * 52.5, 0, 2.44)); bar.castShadow = true; scene.add(bar);
+    const n = new THREE.Mesh(new THREE.BoxGeometry(1.6, 2.44, 7.32, 4, 6, 14), net);
+    n.position.copy(V(sd * 53.3, 0, 1.22)); scene.add(n);
+  }
+})();
+
+// ------------------------------------------------------------------ materials
+function std(color, extra = {}) { return new THREE.MeshStandardMaterial({ color: C(color), roughness: 0.62, metalness: 0.0, ...extra }); }
+function ghostMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(0xff4d6d) }, uOpacity: { value: 0.6 }, uTime: { value: 0 } },
+    vertexShader: `varying vec3 vN; varying vec3 vV; varying float vH;
+      void main(){ vec4 mv = modelViewMatrix * vec4(position,1.0); vN = normalize(normalMatrix*normal);
+        vV = normalize(-mv.xyz); vH = (modelMatrix*vec4(position,1.0)).y; gl_Position = projectionMatrix*mv; }`,
+    fragmentShader: `uniform vec3 uColor; uniform float uOpacity; uniform float uTime;
+      varying vec3 vN; varying vec3 vV; varying float vH;
+      void main(){ float f = pow(1.0 - abs(dot(vN, vV)), 2.2);
+        float scan = 0.82 + 0.18 * sin(vH * 60.0 - uTime * 6.0);
+        float a = clamp((0.22 + 0.9 * f) * uOpacity * scan, 0.0, 0.95);
+        gl_FragColor = vec4(mix(uColor, vec3(1.0), 0.35 * f), a); }`,
+    transparent: true, depthWrite: false, blending: THREE.NormalBlending,
+  });
+}
+function softDiscTexture() {
+  const c = document.createElement("canvas"); c.width = c.height = 256;
+  const g = c.getContext("2d"), gr = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  gr.addColorStop(0, "rgba(255,255,255,0.55)"); gr.addColorStop(0.75, "rgba(255,255,255,0.22)");
+  gr.addColorStop(0.97, "rgba(255,255,255,0.55)"); gr.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(c);
+}
+const SOFT = softDiscTexture();
+function groundDisc(color, opacity) {
+  const m = new THREE.Mesh(new THREE.CircleGeometry(1, 64),
+    new THREE.MeshBasicMaterial({ color: C(color), map: SOFT, transparent: true, opacity, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2; return m;
+}
+function ringMesh(color, r0, r1, opacity = 0.95) {
+  const m = new THREE.Mesh(new THREE.RingGeometry(r0, r1, 64),
+    new THREE.MeshBasicMaterial({ color: C(color), transparent: true, opacity, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2; return m;
+}
+function labelSprite(text, bg) {
+  const c = document.createElement("canvas"); c.width = 128; c.height = 72;
+  const g = c.getContext("2d");
+  g.fillStyle = bg; g.beginPath();
+  if (g.roundRect) g.roundRect(14, 10, 100, 52, 14); else g.rect(14, 10, 100, 52);
+  g.fill();
+  g.fillStyle = "#fff"; g.font = "bold 38px system-ui, sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText(text, 64, 38);
+  const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false, transparent: true }));
+  s.scale.set(0.5, 0.28, 1); s.renderOrder = 10; return s;
+}
+
+// ------------------------------------------------------------------ body rig
+let JI = {};                       // joint name -> index
+const UP = new THREE.Vector3(0, 1, 0), _d = new THREE.Vector3(), _m = new THREE.Matrix4();
+const _x = new THREE.Vector3(), _y = new THREE.Vector3(), _z = new THREE.Vector3();
+// [a, b, radius at a, radius at b, material slot]
+const BONES = [
+  ["lShoulder", "lElbow", 0.058, 0.046, "shirt"], ["rShoulder", "rElbow", 0.058, 0.046, "shirt"],
+  ["lElbow", "lWrist", 0.043, 0.034, "skin"], ["rElbow", "rWrist", 0.043, 0.034, "skin"],
+  ["lHip", "lKnee", 0.088, 0.064, "skin"], ["rHip", "rKnee", 0.088, 0.064, "skin"],
+  ["lKnee", "lAnkle", 0.062, 0.044, "socks"], ["rKnee", "rAnkle", 0.062, 0.044, "socks"],
+  ["lHeel", "lBigToe", 0.045, 0.038, "boots"], ["rHeel", "rBigToe", 0.045, 0.038, "boots"],
+];
+const SHORTS = [["lHip", "lKnee", 0.104, 0.092, 0.42], ["rHip", "rKnee", 0.104, 0.092, 0.42]];
+const BALLS = [["lShoulder", 0.07, "shirt"], ["rShoulder", 0.07, "shirt"], ["lElbow", 0.047, "skin"], ["rElbow", 0.047, "skin"],
+  ["lKnee", 0.066, "skin"], ["rKnee", 0.066, "skin"], ["lWrist", 0.04, "skin"], ["rWrist", 0.04, "skin"],
+  ["lAnkle", 0.046, "socks"], ["rAnkle", 0.046, "socks"]];
+const GEO = {
+  bones: BONES.map(b => new THREE.CylinderGeometry(b[3], b[2], 1, 12)),
+  shorts: SHORTS.map(b => new THREE.CylinderGeometry(b[3], b[2], 1, 14)),
+  torso: new THREE.CylinderGeometry(1, 0.82, 1, 20),
+  pelvis: new THREE.SphereGeometry(1, 18, 12),
+  head: new THREE.SphereGeometry(0.115, 20, 16),
+  nose: new THREE.ConeGeometry(0.035, 0.09, 10),
+  neck: new THREE.CylinderGeometry(0.05, 0.055, 1, 10),
+  ball: new THREE.SphereGeometry(1, 14, 10),
+};
+
+function makeRig(mats, shadows) {
+  const g = new THREE.Group();
+  const mk = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = shadows; g.add(m); return m; };
+  const rig = {
+    group: g,
+    bones: BONES.map((b, k) => mk(GEO.bones[k], mats[b[4]])),
+    shorts: SHORTS.map((b, k) => mk(GEO.shorts[k], mats.shorts)),
+    balls: BALLS.map(b => mk(GEO.ball, mats[b[2]])),
+    torso: mk(GEO.torso, mats.shirt), pelvis: mk(GEO.pelvis, mats.shorts),
+    neck: mk(GEO.neck, mats.skin), head: mk(GEO.head, mats.skin), nose: mk(GEO.nose, mats.accent || mats.shirt),
+  };
+  return rig;
+}
+function jp(J, name) {
+  const i = JI[name]; if (J[3 * i] == null) return null;
+  return new THREE.Vector3(J[3 * i], J[3 * i + 2], -J[3 * i + 1]);
+}
+function placeSeg(mesh, a, b, scaleXZ = 1) {
+  if (!a || !b) { mesh.visible = false; return; }
+  _d.subVectors(b, a); const len = _d.length();
+  if (len < 1e-4) { mesh.visible = false; return; }
+  mesh.visible = true;
+  mesh.position.addVectors(a, b).multiplyScalar(0.5);
+  mesh.scale.set(scaleXZ, len, scaleXZ);
+  mesh.quaternion.setFromUnitVectors(UP, _d.divideScalar(len));
+}
+function updateRig(rig, J) {
+  const P = {}; for (const n of Object.keys(JI)) P[n] = jp(J, n);
+  BONES.forEach((b, k) => placeSeg(rig.bones[k], P[b[0]], P[b[1]]));
+  SHORTS.forEach((b, k) => placeSeg(rig.shorts[k], P[b[0]], P[b[0]] && P[b[1]] ? P[b[0]].clone().lerp(P[b[1]], b[4]) : null));
+  BALLS.forEach((b, k) => { const p = P[b[0]], m = rig.balls[k]; m.visible = !!p; if (p) { m.position.copy(p); m.scale.setScalar(b[1]); } });
+  const ls = P.lShoulder, rs = P.rShoulder, lh = P.lHip, rh = P.rHip;
+  if (ls && rs && lh && rh) {
+    const sh = ls.clone().add(rs).multiplyScalar(0.5), hp = lh.clone().add(rh).multiplyScalar(0.5);
+    _y.subVectors(sh, hp); const h = _y.length(); _y.normalize();
+    _x.subVectors(rs, ls); const w = _x.length(); _x.addScaledVector(_y, -_x.dot(_y)).normalize();
+    _z.crossVectors(_x, _y).normalize();
+    _m.makeBasis(_x, _y, _z);
+    const t = rig.torso; t.visible = true;
+    t.quaternion.setFromRotationMatrix(_m);
+    t.position.copy(hp).addScaledVector(_y, h * 0.55);
+    t.scale.set(Math.max(w, 0.3) * 0.62, h * 0.9, 0.13);
+    const pv = rig.pelvis; pv.visible = true; pv.quaternion.copy(t.quaternion);
+    pv.position.copy(hp).addScaledVector(_y, 0.02);
+    pv.scale.set(Math.max(_x.set(rh.x - lh.x, rh.y - lh.y, rh.z - lh.z).length(), 0.2) * 0.85, 0.13, 0.12);
+    // head & neck
+    const le = P.lEar, re = P.rEar, no = P.nose;
+    const hc = le && re ? le.clone().add(re).multiplyScalar(0.5) : (no ? no.clone() : sh.clone().addScaledVector(_y, 0.25));
+    hc.y += 0.03;
+    rig.head.visible = true; rig.head.position.copy(hc);
+    placeSeg(rig.neck, sh, hc.clone().addScaledVector(_y, -0.07));
+    if (no) {
+      _d.subVectors(no, hc); _d.y = 0; const L = _d.length();
+      if (L > 1e-3) { _d.divideScalar(L); rig.nose.visible = true;
+        rig.nose.position.copy(hc).addScaledVector(_d, 0.12);
+        rig.nose.quaternion.setFromUnitVectors(UP, _d); } else rig.nose.visible = false;
+    } else rig.nose.visible = false;
+  } else { rig.torso.visible = rig.pelvis.visible = rig.head.visible = rig.neck.visible = rig.nose.visible = false; }
+}
+
+// ------------------------------------------------------------------ pose bank (hold / canonical)
+let POSEIDX = {}, CANON = null, HEAD = {};
+function precompute() {
+  JI = Object.fromEntries(clip.joints.map((n, i) => [n, i]));
+  POSEIDX = {}; HEAD = {}; CANON = null;
+  const N = clip.frames.length, HOLD = 50;
+  const pids = Object.keys(clip.players).map(Number);
+  for (const pid of pids) {
+    const has = new Int32Array(N).fill(-1), pos = new Array(N).fill(null);
+    clip.frames.forEach((F, i) => { const p = F.p.find(q => q[0] === pid); if (p) { pos[i] = [p[1], p[2]]; if (p[3]) has[i] = i; } });
+    // nearest frame with pose within HOLD frames
+    const near = new Int32Array(N).fill(-1);
+    let last = -1e9; const prev = new Int32Array(N), next = new Int32Array(N);
+    for (let i = 0; i < N; i++) { if (has[i] >= 0) last = i; prev[i] = last; }
+    last = 1e9; for (let i = N - 1; i >= 0; i--) { if (has[i] >= 0) last = i; next[i] = last; }
+    for (let i = 0; i < N; i++) {
+      const a = i - prev[i], b = next[i] - i;
+      if (Math.min(a, b) <= HOLD) near[i] = a <= b ? prev[i] : next[i];
+    }
+    // heading from motion (fallback when no pose at all)
+    const hd = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const i0 = Math.max(0, i - 4), i1 = Math.min(N - 1, i + 4);
+      const p0 = pos[i0], p1 = pos[i1];
+      hd[i] = p0 && p1 && Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) > 0.15 ? Math.atan2(p1[1] - p0[1], p1[0] - p0[0]) : (i ? hd[i - 1] : 0);
+    }
+    POSEIDX[pid] = { near, pos }; HEAD[pid] = hd;
+    if (!CANON) {
+      const i = has.findIndex(v => v >= 0);
+      if (i >= 0) {
+        const p = clip.frames[i].p.find(q => q[0] === pid), J = p[3];
+        const L = JI.lShoulder, R = JI.rShoulder;
+        const fx = -(J[3 * R + 1] - J[3 * L + 1]), fy = J[3 * R] - J[3 * L], a = -Math.atan2(fy, fx);
+        CANON = J.map((v, k) => v);
+        for (let j = 0; j < clip.joints.length; j++) {
+          if (J[3 * j] == null) continue;
+          const dx = J[3 * j] - p[1], dy = J[3 * j + 1] - p[2];
+          CANON[3 * j] = dx * Math.cos(a) - dy * Math.sin(a); CANON[3 * j + 1] = dx * Math.sin(a) + dy * Math.cos(a);
+        }
+      }
+    }
+  }
+}
+// pose of player pid at frame index i, translated to (x, y); returns [J, held]
+function poseAt(pid, i, x, y) {
+  const P = POSEIDX[pid]; if (!P) return [null, false];
+  const k = P.near[i];
+  if (k >= 0) {
+    const src = clip.frames[k].p.find(q => q[0] === pid);
+    if (k === i) return [src[3], false];
+    const J = src[3].slice(), dx = x - src[1], dy = y - src[2];
+    for (let j = 0; j < J.length; j += 3) if (J[j] != null) { J[j] += dx; J[j + 1] += dy; }
+    return [J, true];
+  }
+  if (!CANON) return [null, true];
+  const a = HEAD[pid][i], J = CANON.slice();
+  for (let j = 0; j < J.length; j += 3) if (J[j] != null) {
+    const cx = CANON[j], cy = CANON[j + 1];
+    J[j] = x + cx * Math.cos(a) - cy * Math.sin(a); J[j + 1] = y + cx * Math.sin(a) + cy * Math.cos(a);
+  }
+  return [J, true];
+}
+// last sighting (by the focal defender) of each target, per frame
+let LASTSEEN = {};
+function precomputeSightings() {
+  LASTSEEN = {};
+  const N = clip.frames.length;
+  for (const [pid, info] of Object.entries(clip.players)) {
+    if (info.d) continue;
+    const arr = new Int32Array(N).fill(-1); let last = -1;
+    clip.frames.forEach((F, i) => { const g = fg(F).find(q => q[0] === +pid); if (g && g[8] > 0.01) last = i; arr[i] = last; });
+    LASTSEEN[pid] = arr;
+  }
+}
+
+// ------------------------------------------------------------------ focal defender (selectable)
+let defIdx = 0, origFocal = null;
+const fg = F => (clip.defs && F.G ? F.G[defIdx] : F.g) || [];
+const fh = F => (clip.defs && F.H ? F.H[defIdx] : F.h);
+const curSeries = () => (clip.series_by && clip.series_by[clip.focal]) || clip.series;
+function focalSubtitle() {
+  const S = curSeries(), info = clip.players[clip.focal];
+  const outcome = (clip.subtitle.split(" · ").pop() || "");
+  if (!S) return clip.subtitle;
+  const n = S.w.length, seen = S.w.filter(v => v > 0.01).length;
+  const fb = S.state.filter(v => v === 2).length / clip.fps;
+  const tag = clip.focal === origFocal ? " · nearest at run start" : "";
+  return `Defender ${info.name} (#${info.n})${tag} saw the runner ${Math.round(100 * seen / n)}% of the clip · ` +
+         `${fb.toFixed(1)}s in false belief · ${outcome}`;
+}
+function setFocal(pid) {
+  if (!clip.defs || !clip.defs.includes(pid) || pid === clip.focal) return;
+  const keep = fi;
+  clip.focal = pid;
+  loadClip(+document.getElementById("clip").value, keep);
+}
+
+// ------------------------------------------------------------------ actors
+let clip = null, actors = {}, ghosts = {}, ball, ballShadow, fov, focalRing, targetRing, alarm;
+let trailReal, trailGhost;
+const world = new THREE.Group(); scene.add(world);
+const ghostClock = { t: 0 };
+
+function makeActor(pid, info) {
+  const T = info.d ? TEAM.def : TEAM.att;
+  const mats = { shirt: std(T.shirt), shorts: std(T.shorts), socks: std(T.socks), skin: std(SKIN, { roughness: 0.75 }),
+    boots: std(0x15181d, { roughness: 0.4 }), accent: std(0xffffff) };
+  if (+pid === clip.focal) { mats.shirt = std(T.shirt, { emissive: C(0x3a2c00), emissiveIntensity: 0.6 }); mats.accent = std(0xffd54a, { emissive: C(0x5a4300) }); }
+  const rig = makeRig(mats, true);
+  const label = labelSprite(String(info.n), +pid === clip.focal ? "#c99a00" : T.label);
+  rig.group.traverse(o => { o.userData.pid = +pid; });
+  world.add(rig.group, label);
+  return { rig, label, mats, info };
+}
+function makeGhost() {
+  const mat = ghostMaterial();
+  const mats = { shirt: mat, shorts: mat, socks: mat, skin: mat, boots: mat, accent: mat };
+  const rig = makeRig(mats, false);
+  rig.group.renderOrder = 5;
+  const ellipse = groundDisc(0xff4d6d, 0.5); const ellG = new THREE.Group(); ellG.add(ellipse);
+  const feet = ringMesh(0xff4d6d, 0.42, 0.5, 0.8);
+  const lgeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+  const link = new THREE.Line(lgeo, new THREE.LineDashedMaterial({ color: 0xff4d6d, dashSize: 0.45, gapSize: 0.3, transparent: true }));
+  link.frustumCulled = false;
+  world.add(rig.group, ellG, feet, link);
+  return { rig, mat, ellipse, ellG, feet, link };
+}
+function makeTrail(color) {
+  const n = 40, geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  const col = new Float32Array(n * 3), c = new THREE.Color(color);
+  for (let i = 0; i < n; i++) { const k = (i / (n - 1)) ** 1.5, bg = [0.11, 0.33, 0.19]; for (let j = 0; j < 3; j++) col[3 * i + j] = bg[j] + ([c.r, c.g, c.b][j] - bg[j]) * k; }
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  const l = new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, depthWrite: false }));
+  l.frustumCulled = false; world.add(l); l.n = n; return l;
+}
+function fovMesh() {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uOp: { value: 1 } },
+    vertexShader: `varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader: `uniform float uOp; varying vec2 vP;
+      void main(){ float r = length(vP); float a = atan(vP.y, vP.x);
+        if (abs(a) > 1.0472) discard;
+        float ang = exp(-pow(a / 0.75, 2.0)); float rad = 1.0 - smoothstep(4.0, 36.0, r);
+        float edge = smoothstep(1.0472, 1.02, abs(a)) * (1.0 - smoothstep(1.0, 1.0472, abs(a))) * 0.0;
+        gl_FragColor = vec4(1.0, 0.84, 0.29, (0.30 * ang * rad + edge) * uOp); }`,
+    transparent: true, depthWrite: false,
+  });
+  const m = new THREE.Mesh(new THREE.CircleGeometry(36, 96), mat);
+  m.rotation.x = -Math.PI / 2; m.position.y = 0.02;
+  const g = new THREE.Group(); g.add(m); g.mat = mat; return g;
+}
+
+function loadClip(i, keepFrame = null) {
+  if (keepFrame == null && CLIPS[i].focal0 != null) CLIPS[i].focal = CLIPS[i].focal0;   // new clip: back to default
+  clip = CLIPS[i];
+  if (clip.focal0 == null) clip.focal0 = clip.focal;
+  origFocal = clip.focal0;
+  defIdx = clip.defs ? Math.max(0, clip.defs.indexOf(clip.focal)) : 0;
+  const dsel = document.getElementById("defender");
+  dsel.innerHTML = "";
+  for (const d of clip.defs || [clip.focal]) {
+    const inf = clip.players[d]; if (!inf) continue;
+    const o = document.createElement("option"); o.value = d;
+    o.textContent = `#${inf.n} ${inf.name}${inf.role ? " · " + inf.role : ""}${d === origFocal ? " ★" : ""}`;
+    dsel.appendChild(o);
+  }
+  dsel.value = clip.focal; dsel.disabled = !clip.defs;
+  const sel = document.getElementById("clip"); if (sel.options.length) sel.value = i;
+  while (world.children.length) world.remove(world.children[0]);
+  precompute(); precomputeSightings();
+  actors = {}; ghosts = {};
+  for (const [pid, info] of Object.entries(clip.players)) actors[pid] = makeActor(pid, info);
+  for (const [pid, info] of Object.entries(clip.players)) if (!info.d) ghosts[pid] = makeGhost();
+  ball = new THREE.Mesh(new THREE.SphereGeometry(0.11, 20, 14), std(0xffffff, { roughness: 0.35 }));
+  ball.castShadow = true; world.add(ball);
+  fov = fovMesh(); world.add(fov);
+  focalRing = ringMesh(0xffd54a, 0.62, 0.78); world.add(focalRing);
+  targetRing = ringMesh(0xffffff, 0.62, 0.74, 0.9); world.add(targetRing);
+  alarm = ringMesh(0xff4d6d, 0.8, 1.0, 0.0); world.add(alarm);
+  trailReal = makeTrail(0xffffff); trailGhost = makeTrail(0xff4d6d);
+  document.getElementById("title").textContent = clip.title;
+  document.getElementById("subtitle").textContent = focalSubtitle();
+  const fi_ = clip.players[clip.focal], ti = clip.target ? clip.players[clip.target] : null;
+  document.getElementById("who").innerHTML =
+    `<span style="color:var(--accent)">●</span> focal defender #${fi_.n} ${fi_.name}` +
+    (ti ? ` &nbsp; <span style="color:#fff">◯</span> runner #${ti.n} ${ti.name}` : "");
+  slider.max = clip.frames.length - 1;
+  fi = keepFrame == null ? 0 : Math.min(keepFrame, clip.frames.length - 1);
+  setCam(camMode, true); setFrame(fi);
+}
+
+// ------------------------------------------------------------------ frame update
+let fi = 0, showAll = true, showTrails = true, showLabels = true, curState = 0;
+function setFrame(i) {
+  fi = Math.max(0, Math.min(clip.frames.length - 1, i));
+  const F = clip.frames[fi];
+  slider.value = fi; document.getElementById("time").textContent = F.t.toFixed(1) + " s";
+  const seen = new Set();
+  for (const [pid, x, y, J0, det] of F.p) {
+    const a = actors[pid]; if (!a) continue; seen.add(String(pid));
+    const [J, held] = J0 ? [J0, false] : poseAt(pid, fi, x, y);
+    const hide = camMode === "pov" && pid === clip.focal;
+    a.rig.group.visible = !!J && !hide;
+    if (J) updateRig(a.rig, J);
+    const op = held ? 0.55 : 1;                       // held / canonical pose drawn a bit transparent
+    for (const m of Object.values(a.mats)) { m.transparent = op < 1; m.opacity = op; }
+    const hp = J ? jp(J, "nose") : null;
+    a.label.visible = showLabels && !hide;
+    a.label.position.copy(V(x, y, (hp ? hp.y : 1.7) + 0.5));
+    if (pid === clip.focal) focalRing.position.copy(V(x, y, 0.02));
+    if (pid === clip.target) { targetRing.position.copy(V(x, y, 0.025)); alarm.position.copy(V(x, y, 0.03)); }
+  }
+  for (const [pid, a] of Object.entries(actors)) if (!seen.has(pid)) { a.rig.group.visible = false; a.label.visible = false; }
+  if (F.b) { ball.visible = true; ball.position.copy(V(F.b[0], F.b[1], Math.max(0.11, F.b[2] ?? 0.11))); } else ball.visible = false;
+
+  const fp = F.p.find(p => p[0] === clip.focal);
+  if (fp && fh(F)) { fov.visible = true; fov.position.copy(V(fp[1], fp[2], 0)); fov.rotation.y = fh(F)[0];
+    fov.mat.uniforms.uOp.value = fh(F)[1] === "ball_prior" ? 0.35 : 1; } else fov.visible = false;
+
+  // ghosts: the focal defender's memory of each attacker
+  const realPos = Object.fromEntries(F.p.map(p => [p[0], [p[1], p[2]]]));
+  for (const g of Object.values(ghosts)) g.rig.group.visible = g.ellG.visible = g.feet.visible = g.link.visible = false;
+  for (const [tid, gx, gy, a, b, ang, err, st, w] of fg(F)) {
+    const g = ghosts[tid]; if (!g || gx == null) continue;
+    const strong = tid === clip.target;
+    if (!showAll && !strong) continue;
+    // pose remembered at last sighting, moved to the believed position
+    const ls = LASTSEEN[tid] ? LASTSEEN[tid][fi] : -1;
+    let J = null;
+    if (ls >= 0) { const P = POSEIDX[tid].pos[ls]; if (P) [J] = poseAt(tid, ls, P[0], P[1]);
+      if (J) { J = J.slice(); const dx = gx - POSEIDX[tid].pos[ls][0], dy = gy - POSEIDX[tid].pos[ls][1];
+        for (let j = 0; j < J.length; j += 3) if (J[j] != null) { J[j] += dx; J[j + 1] += dy; } } }
+    if (!J) [J] = poseAt(tid, fi, gx, gy);
+    const col = STATE_HEX[st];
+    const visible = st !== 0 || err > 0.6;                  // aware & on top of the player: fade out
+    g.rig.group.visible = visible && !!J; if (J && visible) updateRig(g.rig, J);
+    g.mat.uniforms.uColor.value.setHex(col);
+    g.mat.uniforms.uOpacity.value = (strong ? 0.95 : 0.45) * (st === 0 ? 0.5 : 1);
+    g.feet.visible = visible; g.feet.position.copy(V(gx, gy, 0.03)); g.feet.material.color.copy(C(col));
+    g.feet.material.opacity = strong ? 0.85 : 0.35;
+    g.ellG.visible = strong && visible; g.ellG.position.copy(V(gx, gy, 0.022)); g.ellG.rotation.y = ang;
+    g.ellipse.scale.set(Math.max(a, 0.4), Math.max(b, 0.4), 1); g.ellipse.material.color.copy(C(col));
+    const rp = realPos[tid];
+    if (rp && visible) {
+      g.link.visible = true;
+      const arr = g.link.geometry.attributes.position.array;
+      arr[0] = gx; arr[1] = 0.05; arr[2] = -gy; arr[3] = rp[0]; arr[4] = 0.05; arr[5] = -rp[1];
+      g.link.geometry.attributes.position.needsUpdate = true; g.link.computeLineDistances();
+      g.link.material.color.copy(C(errHex(err))); g.link.material.opacity = strong ? 1 : 0.4;
+    }
+  }
+  updateTrails();
+  const tg = clip.target ? fg(F).find(q => q[0] === clip.target) : null;
+  const pill = document.getElementById("statepill");
+  if (tg) {
+    curState = tg[7];
+    document.getElementById("errv").textContent = tg[6] == null ? "no belief" : tg[6].toFixed(1) + " m";
+    pill.textContent = STATE_NAME[tg[7]]; pill.style.background = STATE_CSS[tg[7]]; pill.style.color = "#0b0e13";
+    document.getElementById("wv").textContent = `w = ${tg[8].toFixed(2)} · ${tg[8] > 0.01 ? "in view" : "not seen"}`;
+  }
+  drawChart(); drawRadar(F);
+}
+function updateTrails() {
+  for (const t of [trailReal, trailGhost]) t.visible = showTrails && !!clip.target;
+  if (!showTrails || !clip.target) return;
+  const n = trailReal.n, R = trailReal.geometry.attributes.position.array, G = trailGhost.geometry.attributes.position.array;
+  let lastR = null, lastG = null;
+  for (let k = 0; k < n; k++) {
+    const i = Math.max(0, fi - (n - 1 - k));
+    const F = clip.frames[i];
+    const p = F.p.find(q => q[0] === clip.target); if (p) lastR = [p[1], p[2]];
+    const g = fg(F).find(q => q[0] === clip.target); if (g && g[1] != null) lastG = [g[1], g[2]];
+    const r = lastR || [0, 0], gg = lastG || r;
+    R[3 * k] = r[0]; R[3 * k + 1] = 0.06; R[3 * k + 2] = -r[1];
+    G[3 * k] = gg[0]; G[3 * k + 1] = 0.06; G[3 * k + 2] = -gg[1];
+  }
+  trailReal.geometry.attributes.position.needsUpdate = true; trailGhost.geometry.attributes.position.needsUpdate = true;
+}
+
+// ------------------------------------------------------------------ cameras (smoothed)
+let camMode = "broadcast";
+const camGoal = { pos: new THREE.Vector3(), look: new THREE.Vector3() }, camLook = new THREE.Vector3();
+let smoothHead = null;
+function focalPose(F) {
+  const fp = F.p.find(p => p[0] === clip.focal); if (!fp) return null;
+  let [J] = fp[3] ? [fp[3]] : poseAt(clip.focal, fi, fp[1], fp[2]);
+  let eye = [fp[1], fp[2], 1.68];
+  if (J && J[3 * JI.lEar] != null && J[3 * JI.rEar] != null)
+    eye = [(J[3 * JI.lEar] + J[3 * JI.rEar]) / 2, (J[3 * JI.lEar + 1] + J[3 * JI.rEar + 1]) / 2, (J[3 * JI.lEar + 2] + J[3 * JI.rEar + 2]) / 2 + 0.04];
+  return { x: fp[1], y: fp[2], eye, h: fh(F) ? fh(F)[0] : 0 };
+}
+function updateCamGoal(dt) {
+  const F = clip.frames[fi], p = focalPose(F); if (!p) return;
+  if (smoothHead == null) smoothHead = p.h;
+  let dh = Math.atan2(Math.sin(p.h - smoothHead), Math.cos(p.h - smoothHead));
+  smoothHead += dh * (1 - Math.exp(-dt * 7));
+  const dx = Math.cos(smoothHead), dy = Math.sin(smoothHead);
+  if (camMode === "pov") {
+    camGoal.pos.copy(V(p.eye[0] + 0.08 * dx, p.eye[1] + 0.08 * dy, p.eye[2]));
+    camGoal.look.copy(V(p.eye[0] + 12 * dx, p.eye[1] + 12 * dy, 1.0));
+  } else if (camMode === "follow") {
+    camGoal.pos.copy(V(p.x - 6.5 * dx + 1.2 * dy, p.y - 6.5 * dy - 1.2 * dx, 3.2));
+    camGoal.look.copy(V(p.x + 7 * dx, p.y + 7 * dy, 0.9));
+  } else {
+    camGoal.look.copy(V(p.x, p.y, 0));
+  }
+}
+function setCam(mode, instant) {
+  camMode = mode; smoothHead = null;
+  document.querySelectorAll(".cam").forEach(b => b.classList.toggle("on", b.dataset.cam === mode));
+  controls.enabled = mode === "broadcast" || mode === "top";
+  camera.fov = mode === "pov" ? 78 : 50; camera.updateProjectionMatrix();
+  document.getElementById("vignette").classList.toggle("on", mode === "pov");
+  const p = clip ? focalPose(clip.frames[fi]) || { x: 0, y: 0 } : { x: 0, y: 0 };
+  if (mode === "broadcast") { controls.target.copy(V(p.x, p.y, 0)); camera.position.copy(V(p.x - 6, p.y - 34, 21)); }
+  if (mode === "top") { controls.target.copy(V(p.x, p.y, 0)); camera.position.copy(V(p.x, p.y - 0.01, 62)); }
+  document.getElementById("radarcap").textContent = mode === "pov" ? "radar · head-up (what's behind him)" : "radar · pitch-up";
+  if (clip) { updateCamGoal(1); if (mode === "pov" || mode === "follow") { camera.position.copy(camGoal.pos); camLook.copy(camGoal.look); camera.lookAt(camLook); } setFrame(fi); }
+}
+document.querySelectorAll(".cam").forEach(b => b.onclick = () => setCam(b.dataset.cam));
+
+// ------------------------------------------------------------------ radar
+const rc = document.getElementById("radarc"), rctx = rc.getContext("2d");
+const hexCss = h => "#" + h.toString(16).padStart(6, "0");
+function drawRadar(F) {
+  const W = rc.width, R = 30, s = W / (2 * R);
+  const bg = rctx.createRadialGradient(W / 2, W / 2, 10, W / 2, W / 2, W * 0.7);
+  bg.addColorStop(0, "#1b3b27"); bg.addColorStop(1, "#0f2117");
+  rctx.fillStyle = bg; rctx.fillRect(0, 0, W, W);
+  const p = focalPose(F); if (!p) return;
+  const rot = camMode === "pov" ? Math.PI / 2 - (smoothHead ?? p.h) : 0;
+  const tf = (x, y) => { const dx = x - p.x, dy = y - p.y, c = Math.cos(rot), sn = Math.sin(rot);
+    return [W / 2 + (dx * c - dy * sn) * s, W / 2 - (dx * sn + dy * c) * s]; };
+  rctx.strokeStyle = "rgba(255,255,255,0.06)"; rctx.lineWidth = 1;
+  for (const r of [10, 20, 30]) { rctx.beginPath(); rctx.arc(W / 2, W / 2, r * s, 0, 2 * Math.PI); rctx.stroke(); }
+  rctx.strokeStyle = "rgba(255,255,255,0.25)"; rctx.lineWidth = 2; rctx.beginPath();
+  for (const [a, b] of [[[-52.5,-34],[52.5,-34]],[[52.5,-34],[52.5,34]],[[52.5,34],[-52.5,34]],[[-52.5,34],[-52.5,-34]],[[0,-34],[0,34]]]) {
+    const A = tf(...a), B = tf(...b); rctx.moveTo(...A); rctx.lineTo(...B); }
+  rctx.stroke();
+  if (fh(F)) {
+    const c0 = tf(p.x, p.y), gr = rctx.createRadialGradient(c0[0], c0[1], 0, c0[0], c0[1], 30 * s);
+    const al = fh(F)[1] === "ball_prior" ? 0.1 : 0.28;
+    gr.addColorStop(0, `rgba(255,213,74,${al})`); gr.addColorStop(1, "rgba(255,213,74,0)");
+    rctx.fillStyle = gr; rctx.beginPath(); rctx.moveTo(...c0);
+    for (let k = 0; k <= 32; k++) { const a = p.h - Math.PI / 3 + k * (2 * Math.PI / 3) / 32;
+      rctx.lineTo(...tf(p.x + 60 * Math.cos(a), p.y + 60 * Math.sin(a))); }
+    rctx.closePath(); rctx.fill();
+  }
+  const realPos = Object.fromEntries(F.p.map(q => [q[0], q]));
+  for (const [tid, gx, gy, a, b, ang, err, st] of fg(F)) {
+    if (gx == null || (!showAll && tid !== clip.target)) continue;
+    const rp = realPos[tid]; if (!rp) continue;
+    const G = tf(gx, gy), Rr = tf(rp[1], rp[2]);
+    rctx.strokeStyle = hexCss(errHex(err)); rctx.lineWidth = tid === clip.target ? 3 : 1.5;
+    rctx.beginPath(); rctx.moveTo(...G); rctx.lineTo(...Rr); rctx.stroke();
+    rctx.setLineDash([5, 4]); rctx.strokeStyle = hexCss(STATE_HEX[st]);
+    rctx.beginPath(); rctx.arc(G[0], G[1], 9, 0, 2 * Math.PI); rctx.stroke(); rctx.setLineDash([]);
+  }
+  for (const [pid, x, y] of F.p) {
+    const info = clip.players[pid]; const [X, Y] = tf(x, y);
+    rctx.fillStyle = pid === clip.focal ? "#ffd54a" : info.d ? "#3d7be0" : "#e04a5c";
+    rctx.beginPath(); rctx.arc(X, Y, pid === clip.focal ? 10 : 8, 0, 2 * Math.PI); rctx.fill();
+    if (pid === clip.target) { rctx.strokeStyle = "#fff"; rctx.lineWidth = 2.5; rctx.stroke(); }
+  }
+  if (F.b) { const [X, Y] = tf(F.b[0], F.b[1]); rctx.fillStyle = "#fff"; rctx.beginPath(); rctx.arc(X, Y, 5, 0, 2 * Math.PI); rctx.fill(); }
+}
+
+// ------------------------------------------------------------------ chart
+const cc = document.getElementById("chart"), cctx = cc.getContext("2d");
+function drawChart() {
+  const S = curSeries(), dpr = Math.min(devicePixelRatio, 2);
+  const W = cc.clientWidth * dpr, H = cc.clientHeight * dpr;
+  if (cc.width !== W || cc.height !== H) { cc.width = W; cc.height = H; }
+  cctx.clearRect(0, 0, W, H);
+  if (!S) return;
+  const T = S.t[S.t.length - 1] || 1, band = 8 * dpr, h = H - band - 4 * dpr, X = t => t / T * W;
+  const bc = ["#38d9a9", "#f5a623", "#ff4d6d", "#3a414c"];
+  for (let i = 0; i < S.t.length - 1; i++) { cctx.fillStyle = bc[S.state[i]];
+    cctx.fillRect(X(S.t[i]), H - band, X(S.t[i + 1]) - X(S.t[i]) + 1, band); }
+  const emax = Math.max(6, ...S.err.filter(v => v != null));
+  // filled area under ghost error
+  cctx.beginPath(); let started = false;
+  S.err.forEach((v, i) => { if (v == null) return; const x = X(S.t[i]), y = h - v / emax * (h - 4 * dpr);
+    if (!started) { cctx.moveTo(x, h); cctx.lineTo(x, y); started = true; } else cctx.lineTo(x, y); });
+  if (started) { cctx.lineTo(X(S.t[S.t.length - 1]), h); cctx.closePath();
+    const gr = cctx.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, "rgba(255,77,109,0.35)"); gr.addColorStop(1, "rgba(255,77,109,0)");
+    cctx.fillStyle = gr; cctx.fill(); }
+  const line = (arr, color, scale) => { cctx.strokeStyle = color; cctx.lineWidth = 1.6 * dpr; cctx.beginPath();
+    let pen = false; arr.forEach((v, i) => { if (v == null) { pen = false; return; }
+      const x = X(S.t[i]), y = h - v / scale * (h - 4 * dpr); pen ? cctx.lineTo(x, y) : cctx.moveTo(x, y); pen = true; }); cctx.stroke(); };
+  line(S.acov, "#8a93a0", 1); line(S.w, "#3d7be0", 1); line(S.err, "#ff4d6d", emax);
+  cctx.fillStyle = "#97a1ae"; cctx.font = `${10 * dpr}px system-ui`; cctx.fillText(`err max ${emax.toFixed(0)} m`, 4 * dpr, 12 * dpr);
+  const t = clip.frames[fi].t; cctx.strokeStyle = "#ffd54a"; cctx.lineWidth = 1.5 * dpr;
+  cctx.beginPath(); cctx.moveTo(X(t), 0); cctx.lineTo(X(t), H); cctx.stroke();
+}
+
+// ------------------------------------------------------------------ UI + loop
+const slider = document.getElementById("slider");
+slider.oninput = () => setFrame(+slider.value);
+let playing = false, acc = 0, last = performance.now();
+const playBtn = document.getElementById("play");
+playBtn.onclick = () => { playing = !playing; playBtn.textContent = playing ? "❚❚" : "▶";
+  if (playing && fi >= clip.frames.length - 1) setFrame(0); };
+const toggle = (id, fn) => document.getElementById(id).onclick = e => { const v = fn(); e.target.classList.toggle("on", v); setFrame(fi); };
+toggle("ghostsAll", () => (showAll = !showAll));
+toggle("trails", () => (showTrails = !showTrails));
+toggle("labels", () => (showLabels = !showLabels));
+const clipSel = document.getElementById("clip");
+CLIPS.forEach((c, i) => { const o = document.createElement("option"); o.value = i; o.textContent = c.title; clipSel.appendChild(o); });
+clipSel.onchange = () => loadClip(+clipSel.value);
+document.getElementById("defender").onchange = e => setFocal(+e.target.value);
+// click on a defender's body to make him the focal defender (ignore drags)
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(); let downAt = null;
+renderer.domElement.addEventListener("pointerdown", e => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", e => {
+  if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5 || !clip) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const groups = Object.entries(actors).filter(([pid, a]) => a.info.d && a.rig.group.visible).map(([, a]) => a.rig.group);
+  const hit = ray.intersectObjects(groups, true)[0];
+  if (hit) setFocal(hit.object.userData.pid);
+});
+if (CLIPS.length < 2) clipSel.style.display = "none";
+addEventListener("keydown", e => {
+  if (e.code === "Space") { playBtn.click(); e.preventDefault(); }
+  if (e.code === "ArrowRight") setFrame(fi + 1);
+  if (e.code === "ArrowLeft") setFrame(fi - 1);
+  const m = { Digit1: "broadcast", Digit2: "top", Digit3: "follow", Digit4: "pov" }[e.code]; if (m) setCam(m);
+  if ((e.code === "BracketLeft" || e.code === "BracketRight") && clip.defs) {
+    const k = (clip.defs.indexOf(clip.focal) + (e.code === "BracketRight" ? 1 : -1) + clip.defs.length) % clip.defs.length;
+    setFocal(clip.defs[k]);
+  }
+});
+function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h);
+  camera.aspect = w / h; camera.updateProjectionMatrix(); if (clip) drawChart(); }
+addEventListener("resize", resize); resize();
+const prevTarget = new THREE.Vector3();
+function loop(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (playing && clip) {
+    acc += dt * clip.fps * +document.getElementById("speed").value;
+    if (acc >= 1) { const n = Math.floor(acc); acc -= n;
+      if (fi + n >= clip.frames.length - 1) { setFrame(clip.frames.length - 1); playing = false; playBtn.textContent = "▶"; }
+      else setFrame(fi + n); }
+  }
+  if (clip) {
+    updateCamGoal(dt);
+    const k = 1 - Math.exp(-dt * (camMode === "pov" ? 14 : 6));
+    if (camMode === "pov" || camMode === "follow") {
+      camera.position.lerp(camGoal.pos, k); camLook.lerp(camGoal.look, k); camera.lookAt(camLook);
+    } else if (playing) {                       // broadcast/top: gently track the focal defender
+      prevTarget.copy(controls.target); controls.target.lerp(camGoal.look, k * 0.5);
+      camera.position.add(prevTarget.sub(controls.target).negate());
+    }
+    // sun & shadow follow the action
+    const c = controls.enabled ? controls.target : camLook;
+    sun.position.set(c.x + 18, 40, c.z + 14); sun.target.position.copy(c);
+    // pulse the false-belief alarm under the runner, animate holograms
+    ghostClock.t += dt;
+    for (const g of Object.values(ghosts)) g.mat.uniforms.uTime.value = ghostClock.t;
+    alarm.material.opacity = curState === 2 ? 0.35 + 0.35 * Math.sin(ghostClock.t * 6) : 0;
+    alarm.scale.setScalar(curState === 2 ? 1 + 0.25 * (0.5 + 0.5 * Math.sin(ghostClock.t * 6)) : 1);
+  }
+  if (controls.enabled) controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+if (CLIPS.length) loadClip(0);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
