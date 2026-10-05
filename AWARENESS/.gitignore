@@ -1,0 +1,10 @@
+# Local-only stuff for the AWARENESS workspace (Filippo)
+.venv/
+data_local/
+outputs/cache/
+outputs/**/*.mp4
+__pycache__/
+*.ipynb_checkpoints
+.DS_Store
+# GIFs, PNG snapshots and viewer screenshots: kept locally, not committed (for now)
+outputs/media/

@@ -1,0 +1,12 @@
+# AWARENESS workspace (Filippo) — on top of the repo requirements
+numpy
+pandas>=2.2
+scipy
+matplotlib
+mplsoccer
+pyarrow
+orjson
+# only for tests/check_kalman_port.py (thesis reference implementation)
+filterpy
+# only for headless screenshots of the 3D viewer (optional)
+playwright
