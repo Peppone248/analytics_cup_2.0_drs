@@ -1,6 +1,7 @@
 # Global/macOS
 .DS_Store
 .claude/
+Thumbs.db
 
 # Python
 __pycache__/
@@ -9,7 +10,9 @@ __pycache__/
 venv/
 .venv
 .env
+.env.local
 .pytest_cache/
+.ruff_cache/
 
 # IDEs
 .idea/
@@ -18,9 +21,36 @@ venv/
 # Project-specific
 archive/
 notebooks/exploratory/
+DRS/scratch/
 
 .agents/
 
 # MkDocs
 site/
 .cache/
+
+# -------------------------------------------------------------------------
+# Dati SkillCorner
+#
+# Il tracking raw e' ~2 GB e sotto licenza: resta fuori dalla repo, e il
+# percorso si configura con DRS_DATA_DIR (vedi DRS/config.py).
+#
+# I due Layer 3 derivati (1.1 MB + 2.7 MB) restano invece TRACCIATI: sono
+# l'input di DRS_t/drst.py, quindi chi clona riproduce l'intera pipeline
+# DRS(t) senza scaricare il raw. matches.json e' l'indice dei match, 7 KB.
+# -------------------------------------------------------------------------
+data/*
+!data/matches.json
+!data/matches/
+data/matches/*
+!data/matches/layer3_all_matches.csv
+!data/matches/layer3_enriched.csv
+
+# -------------------------------------------------------------------------
+# Output: CSV, JSON di config e figure si committano (sono il risultato
+# condiviso e sono piccoli). I binari grossi no: si rigenerano col codice.
+# -------------------------------------------------------------------------
+out/**/*.npz
+out/**/*.parquet
+*.pkl
+*.joblib
