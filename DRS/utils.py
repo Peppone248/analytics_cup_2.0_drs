@@ -13,6 +13,10 @@ def load_events(path):
     events = pd.read_csv(path, encoding="utf-8")
     return events
 
+def load_phases(path):
+    phases = pd.read_csv(path, encoding="utf-8")
+    return phases
+
 def load_match(path):
     with open(path, "r", encoding="utf-8") as f:
         match_data = json.load(f)

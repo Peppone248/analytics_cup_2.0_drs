@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 from config import base
-from utils import load_events, load_tracking, load_match, build_lookup, extract_team_ids, build_player_to_team
+from utils import load_events, load_phases, load_tracking, load_match, build_lookup, extract_team_ids, build_player_to_team
 from nearest_defender import nearest_defender
 from context_features import compute_goal_side, detect_goal_positions
 from scipy.stats import pearsonr
@@ -37,17 +37,20 @@ results = []
 outcome_cols = ["event_id", "event_subtype", "player_id", "player_name",
                 "team_id", "frame_start", "frame_end",
                 "targeted", "received", "lead_to_shot",
-                "separation_start", "separation_end", "separation_gain"]
+                "separation_start", "separation_end", "separation_gain",
+                "out_of_possession_phase", "in_possession_phase"]
 
 for m_id in match_ids:
     try:
         path_event = f"{base}\\{m_id}\\{m_id}_dynamic_events.csv"
         path_tracking = f"{base}\\{m_id}\\{m_id}_tracking_extrapolated.jsonl"
         path_matches = f"{base}\\{m_id}\\{m_id}_match.json"
+        path_phases = f"{base}\\{m_id}\\{m_id}_phases_of_play.json"
 
         match_data = load_match(path_matches)
         events = load_events(path_event)
         frames = load_tracking(path_tracking)
+        phases = load_phases(path_phases)
 
         runs = events[events["event_type"] == "off_ball_run"]
         runs = runs.dropna(subset=["separation_start", "frame_start", "player_id", "team_id"])
