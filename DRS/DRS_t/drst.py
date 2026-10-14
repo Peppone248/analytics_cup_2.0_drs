@@ -65,15 +65,15 @@ import numpy as np
 import pandas as pd
 
 # ====== CONFIGURA QUI ======================================================
-LAYER3_PATH = Path(r"E:\Projects\analytics_cup_2.0_drs\data\matches\layer3_enriched.csv")
-TRACKING_FEATURES = Path(r"E:\Projects\analytics_cup_2.0_drs\data\tracking_features.csv")     # Path("data/tracking_features.csv"), o None
+LAYER3_PATH = Path("data/layer3_enriched.csv")
+TRACKING_FEATURES = None      # Path("data/tracking_features.csv"), o None
 OUT_DIR = Path("out/drst_v2")
-PLOT_MATCH = 1925299          # match_id della figura statica, o None
+PLOT_MATCH = None             # match_id della figura statica, o None
 RUN_OOS = False               # dissociazione out-of-sample (piu' lenta)
 
 PRIOR_KIND = "geometric"      # "geometric" | "spatial" | "subtype"
 GEO_SCALE = 25.0              # metri, solo per il prior geometrico
-GEO_USE_ENDPOINT = True      # prior su min(partenza, arrivo) invece della
+GEO_USE_ENDPOINT = False      # prior su min(partenza, arrivo) invece della
                               # sola partenza. OFF: migliora la singola
                               # corsa (corr +0.403 -> +0.469) e peggiora la
                               # squadra (split-half +0.749 -> +0.628).
@@ -84,11 +84,21 @@ GEO_BALL_GATE = False         # OFF: attenua il prior se la palla e' lontana,
 STRUCTURAL = None             # None = auto
 USE_TRACKING_STRUCTURE = True # str_stretch_rate e str_recovery_rate
 USE_CURVE_CONTAINMENT = False # OFF: sui 20 match peggiora (vedi README)
+CONTAINMENT_KIND = "separation_gain"
+                              # "separation_gain" | "learned". Il learned e'
+                              # il residuo rispetto a un'attesa appresa dalla
+                              # geometria: porta la split-half del containment
+                              # da +0.026 a +0.605. Richiede TRACKING_FEATURES
+                              # e scikit-learn. Resta OFF di default perche'
+                              # dentro il prodotto dello stress peggiora la
+                              # metrica standardizzata per fase: va letto
+                              # come asse separato in team_two_axis.csv,
+                              # che lo usa comunque. Vedi README
 
 # --- animazione 2D (opzionale)
-ANIMATE_MATCH = 1925299          # match_id, o None per saltare
-TRACKING_PATH = Path(r"E:\Projects\analytics_cup_2.0_drs\data\matches\1925299\1925299_tracking_extrapolated.jsonl")
-N_WINDOWS = 15
+ANIMATE_MATCH = None          # match_id, o None per saltare
+TRACKING_PATH = Path("data/tracking.jsonl")
+N_WINDOWS = 5
 SPATIAL_MODE = "gap"          # "runner" | "projected" | "gap"
 FPS = 10
 # ===========================================================================
@@ -241,6 +251,47 @@ class DRSConfig:
     e' informazione che la fase non contiene. Non ottenibile dal Layer 3
     enriched in nessun modo, serve il tracking."""
 
+    containment_kind: str = "separation_gain"
+    """Quale modello di containment usare: 'separation_gain' (z-score del gain
+    per subtype, leggibile) o 'learned' (residuo rispetto a un'attesa appresa
+    dalla geometria pre-corsa).
+
+    Il learned e' molto piu' AFFIDABILE come tratto di squadra:
+
+        split-half di containment_failure_mean   +0.026 -> +0.605
+        standardizzato per fase                  -0.074 -> +0.519
+        confronto appaiato, stessi 400 split     +0.614 +/- 0.030, vince nel 98%
+
+    La ragione: lo z-score per subtype lascia dentro il containment la parte
+    di separation_gain che la geometria spiega da sola (R2 = 0.40). Quella
+    parte dipende da DOVE e' avvenuta la corsa, quindi per la stima di
+    squadra e' rumore. Condizionando sulla geometria la si rimuove.
+
+    DEFAULT 'separation_gain' per due motivi, non per inerzia:
+      - dentro il prodotto dello stress il learned PEGGIORA la metrica di
+        squadra standardizzata per fase (-0.110 +/- 0.008, vince nel 9%).
+        Va usato come ASSE SEPARATO del profilo, ed e' quello che fa
+        aggregate.team_two_axis, che lo calcola da se'.
+      - lo z-score e' spiegabile in una riga a un allenatore, il residuo di
+        un gradient boosting no. Per animazioni e case study resta il
+        riferimento.
+
+    Nessuno dei due usa gli esiti: il target del learned e' separation_gain."""
+
+    learned_n_splits: int = 5
+    """Fold di GroupKFold per le previsioni out-of-fold del containment
+    appreso. Deve coincidere con `n_splits` di dissociation_oos, altrimenti
+    le partizioni non sono le stesse e l'out-of-fold non e' piu' allineato
+    al train fold della validazione."""
+
+    relevance_threshold: float = 0.02
+    """Soglia di rilevanza per i confronti appaiati fra configurazioni.
+
+    Con 8 squadre e 40 righe squadra-match una differenza di split-half sotto
+    questa soglia puo' avere l'intervallo che esclude lo zero ed essere
+    praticamente irrilevante. paired_split_half la riporta come
+    'trascurabile' invece di 'migliora'."""
+
     use_curve_containment: bool = False
     """Usa separation_curve_containment quando le colonne di curva ci sono.
 
@@ -302,6 +353,25 @@ class DRSConfig:
     col_sep_gain: str = "separation_gain"
     col_team: str = "team_id"
     col_defender: str = "defender_id"
+    col_phase: str = "out_of_possession_phase"
+    """Fase difensiva. Serve alla standardizzazione per fase, che e' il modo
+    di togliere da una metrica di squadra l'altezza del blocco.
+
+    Perche' e' necessaria: il danger_prior e' per il 52% prevedibile dalla
+    sola fase e per il 78% dal terzo di partenza, mentre la squadra che
+    difende aggiunge 1.3 punti dopo la fase. Al livello di squadra
+    `prior_mean` da solo vale +0.721 di split-half contro i +0.724 dello
+    stress completo, e correla 0.985 con la quota di corse concesse in fase
+    profonda. Senza standardizzare, la claim principale del DRS e' in buona
+    parte "quanto profondo difende questa squadra"."""
+
+    deep_phases: tuple[str, ...] = (
+        "low_block", "defending_set_play", "defending_quick_break",
+    )
+    """Fasi in cui le corse partono vicino alla porta difesa (distanza media
+    32-34 m, contro 53 m del medium_block e 76 m dell'high_block). La loro
+    quota e' la misura grezza di altezza del blocco con cui si confronta il
+    prior: split-half +0.793, piu' stabile del DRS stesso."""
     outcomes: tuple[str, ...] = ("targeted", "received", "lead_to_shot")
     danger_outcome: str = "lead_to_shot"
 
@@ -579,6 +649,117 @@ def separation_gain_containment(
     out = 1.0 / (1.0 + np.exp(-z))
     # subtype a varianza nulla o gain mancante -> comportamento tipico
     return out.fillna(0.5)
+
+
+# Feature della geometria PRE-corsa per il containment appreso.
+# Escluse di proposito:
+#   separation_end, sep_*                  misurate durante o dopo la corsa
+#   str_stretch_rate, str_recovery_rate    co-realizzate con la corsa
+#   str_d_*                                idem
+#   distance, frame_end                    durata, nota solo a corsa finita
+#   qualunque esito
+# Vuote al 100% sui 20 match, quindi inutilizzabili anche se pre-corsa:
+#   interplayer_distance_start, goal_side_start, angle_of_engagement,
+#   n_teammates_ahead_start
+LEARNED_NUM = (
+    "geo_dist_start", "x_start", "y_start", "separation_start",
+    "n_opponents_ahead_start", "n_simultaneous_runs",
+    "delta_to_last_defensive_line_start", "last_defensive_line_x_start",
+    "ball_dist_goal_start", "ball_dist_runner_start",
+    "str_spread_x", "str_spread_y", "str_area", "str_line_x", "str_line_spread",
+    "pp_n_runs", "pp_n_passing_options", "pp_n_opponents_ahead",
+)
+LEARNED_CAT = ("event_subtype", "out_of_possession_phase", "third_start",
+               "channel_start", "pp_pressure")
+
+
+def has_learned_columns(df: pd.DataFrame) -> bool:
+    """True se il containment appreso e' calcolabile (richiede il merge con
+    tracking_features: 8 delle 18 colonne numeriche vengono da la')."""
+    return all(c in df.columns for c in LEARNED_NUM + LEARNED_CAT)
+
+
+def learned_containment(df: pd.DataFrame, cfg: DRSConfig = DEFAULT) -> pd.Series:
+    """Containment come residuo rispetto a un'attesa APPRESA dalla geometria.
+
+        separation_gain_containment:  sigmoid((gain - media_subtype) / sd_subtype)
+        learned_containment:          sigmoid((gain - previsione) / sd_residuo)
+
+    L'attesa dello z-score e' la media del subtype, un riferimento grossolano:
+    sa solo che per un `behind` il gain tipico e' quello, non che quel
+    `behind` partiva a 40 m con la linea gia' allungata. Qui l'attesa e' la
+    previsione di un gradient boosting che vede tutta la geometria pre-corsa.
+
+    NESSUN ESITO: il target e' `separation_gain`, non `lead_to_shot`. Lo
+    verifica test_learned_containment_ignores_outcomes.
+
+    OUT-OF-FOLD. Le previsioni sono prodotte con GroupKFold su match_id, con
+    `cfg.learned_n_splits` fold. In-sample i residui sarebbero sgonfiati dal
+    fit e il containment sembrerebbe piu' informativo di quanto sia.
+
+    Nota non ovvia: GroupKFold e' deterministico e dissociation_oos usa gli
+    stessi gruppi e lo stesso numero di fold, quindi le partizioni coincidono
+    e la previsione per una corsa del fold k viene sempre da un modello
+    addestrato sui fold diversi da k. Un containment precalcolato cosi' e
+    passato a dissociation_oos resta quindi out-of-sample per davvero, non
+    per approssimazione. Se cambi learned_n_splits, cambia anche n_splits
+    della validazione.
+
+    Verificato su 8877 corse, 20 match:
+        R2 out-of-fold della previsione di separation_gain   +0.401
+        corr con il containment per subtype                  +0.729
+        split-half di containment_failure_mean    +0.026 -> +0.605
+        standardizzato per fase                   -0.074 -> +0.519
+        R2 spiegata dalla sola fase difensiva              0.003
+        corr con structural_vulnerability                 -0.000
+        dissociazione                             regge (targeted p=0.74)
+
+    Il 60% di separation_gain resta non spiegato, e dentro c'e' ancora sia la
+    scelta tattica sia l'errore: questo non risolve il problema dello
+    sguardo, rende solo misurabile il fattore su cui l'awareness puo' agire.
+    """
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    from sklearn.model_selection import GroupKFold
+
+    missing = [c for c in LEARNED_NUM + LEARNED_CAT if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"containment appreso: colonne mancanti {missing}. "
+            "Richiede il merge con tracking_features.csv."
+        )
+
+    X = df.loc[:, list(LEARNED_NUM)].copy()
+    for c in LEARNED_CAT:
+        X[c] = df[c].astype("category").cat.codes
+    y = df[cfg.col_sep_gain].astype(float)
+
+    pred = pd.Series(np.nan, index=df.index, dtype=float)
+    splitter = GroupKFold(n_splits=cfg.learned_n_splits)
+    for train, test in splitter.split(X, y, groups=df[cfg.col_match]):
+        model = HistGradientBoostingRegressor(
+            max_iter=300, learning_rate=0.06, max_depth=5,
+            min_samples_leaf=40, l2_regularization=1.0, random_state=0,
+        )
+        model.fit(X.iloc[train], y.iloc[train])
+        pred.iloc[test] = model.predict(X.iloc[test])
+
+    resid = y - pred
+    sd = resid.std()
+    if not np.isfinite(sd) or sd == 0:
+        return pd.Series(0.5, index=df.index)
+    return (1.0 / (1.0 + np.exp(-(resid / sd)))).fillna(0.5)
+
+
+def fixed_containment(values: pd.Series):
+    """Avvolge un containment GIA' calcolato in un ContainmentModel.
+
+    Serve per non rifittare il modello appreso a ogni chiamata di
+    compute_stress, e per passare lo stesso containment out-of-fold a
+    dissociation_oos, che altrimenti lo ricalcolerebbe su un solo fold.
+    """
+    def _fixed(df: pd.DataFrame, cfg: DRSConfig = DEFAULT) -> pd.Series:
+        return values.reindex(df.index).fillna(0.5)
+    return _fixed
 
 
 CURVE_COLS = ("sep_min", "sep_late", "sep_min_frac", "sep_time_close")
@@ -1130,6 +1311,38 @@ def add_defending_team(df: pd.DataFrame, cfg: DRSConfig = DEFAULT) -> pd.DataFra
     return out
 
 
+def phase_weights(df: pd.DataFrame, cfg: DRSConfig = DEFAULT) -> pd.Series:
+    """Mix di fase medio di lega, da usare come pesi fissi per tutte le squadre."""
+    return df[cfg.col_phase].value_counts(normalize=True)
+
+
+def phase_standardized(
+    g: pd.DataFrame, col: str, weights: pd.Series, cfg: DRSConfig = DEFAULT
+) -> float:
+    """Media di `col` entro ciascuna fase, ripesata col mix di lega.
+
+    E' una standardizzazione DIRETTA, la stessa tecnica dei tassi di
+    mortalita' standardizzati per eta': confronta due squadre come se
+    difendessero con la stessa distribuzione di fasi.
+
+    Togliere la fase e' necessario perche' senza di essa la metrica e' in
+    buona parte altezza del blocco: `prior_mean` da solo correla 0.985 con
+    la quota di corse concesse in fase profonda, e quella quota ha split-half
+    +0.793, piu' del DRS completo. Standardizzando, la correlazione di
+    stress_per_run col mix di fase scende da 0.880 a 0.553.
+
+    Costo: lo split-half scende (stress_per_run +0.724 -> +0.534). Non e' un
+    peggioramento del modello, e' la rimozione di una componente che era
+    informazione gia' nota.
+    """
+    per_phase = g.groupby(cfg.col_phase, observed=True)[col].mean()
+    w = weights.reindex(per_phase.index)
+    tot = w.sum()
+    if not np.isfinite(tot) or tot == 0:
+        return float("nan")
+    return float((per_phase * w).sum() / tot)
+
+
 def team_match_metrics(
     df: pd.DataFrame, curves: dict, cfg: DRSConfig = DEFAULT
 ) -> pd.DataFrame:
@@ -1142,31 +1355,105 @@ def team_match_metrics(
     contare gli zeri dei frame non misurati premierebbe le difese che
     subiscono poche corse.
     """
+    has_phase = cfg.col_phase in df.columns
+    weights = phase_weights(df, cfg) if has_phase else None
+
     rows = []
     for (mid, team), (curve, idx) in curves.items():
         g = df[(df[cfg.col_match] == mid) & (df["defending_team_id"] == team)]
         m = idx.masked(curve)
-        rows.append(
-            {
-                cfg.col_match: mid,
-                "defending_team_id": team,
-                # --- VOLUME (non usare per profili di squadra)
-                "n_runs": len(g),
-                "drs_mean_all": float(curve.mean()),
-                "drs_auc": float(curve.sum() / cfg.tracking_hz),
-                # --- QUALITA' (normalizzate per volume)
-                "stress_per_run": float(g["stress"].mean()),
-                "drs_mean_supported": float(m.mean()) if m.count() else np.nan,
-                "drs_p95_supported": (
-                    float(np.percentile(m.compressed(), 95)) if m.count() else np.nan
-                ),
-                "containment_failure_mean": float(g["containment_failure"].mean()),
-                # --- diagnostica
-                "coverage": idx.coverage(),
-                "n_frames": idx.n_frames,
-            }
-        )
+        row = {
+            cfg.col_match: mid,
+            "defending_team_id": team,
+            # --- VOLUME (non usare per profili di squadra)
+            "n_runs": len(g),
+            "drs_mean_all": float(curve.mean()),
+            "drs_auc": float(curve.sum() / cfg.tracking_hz),
+            # --- QUALITA' (normalizzate per volume)
+            "stress_per_run": float(g["stress"].mean()),
+            "drs_mean_supported": float(m.mean()) if m.count() else np.nan,
+            "drs_p95_supported": (
+                float(np.percentile(m.compressed(), 95)) if m.count() else np.nan
+            ),
+            "containment_failure_mean": float(g["containment_failure"].mean()),
+            "prior_mean": float(g["danger_prior"].mean()),
+            # --- diagnostica
+            "coverage": idx.coverage(),
+            "n_frames": idx.n_frames,
+        }
+        if has_phase and len(g):
+            # --- QUALITA' al netto dell'altezza del blocco
+            row["stress_per_run_phase_adj"] = phase_standardized(g, "stress", weights, cfg)
+            row["containment_phase_adj"] = phase_standardized(
+                g, "containment_failure", weights, cfg)
+            row["deep_phase_share"] = float(g[cfg.col_phase].isin(cfg.deep_phases).mean())
+        rows.append(row)
     return pd.DataFrame(rows)
+
+
+def team_two_axis(
+    df: pd.DataFrame,
+    team_match: pd.DataFrame,
+    cfg: DRSConfig = DEFAULT,
+    containment: pd.Series | None = None,
+) -> pd.DataFrame:
+    """Profilo di squadra a DUE ASSI, invece di un numero solo.
+
+        asse 1  ESPOSIZIONE   quanto stress subisce la difesa, dato come gioca
+        asse 2  CEDIMENTO     quanto cede nei duelli, a parita' di fase
+
+    ATTENZIONE AL SEGNO: su entrambi gli assi ALTO = PEGGIO. `cedimento` e' la
+    media di `containment_failure`, cioe' di quanto il runner si libera piu'
+    del previsto: una difesa che contiene bene ha cedimento BASSO. Si chiama
+    cosi' e non "contenimento" proprio per non invertire la lettura.
+
+    Perche' due assi e non il prodotto a tre fattori. Il prodotto e' dominato
+    dal prior, che e' per il 52% fase difensiva: `prior_mean` da solo ha
+    split-half +0.721 contro i +0.724 dello stress completo. Il containment
+    appreso, da solo, ha +0.605 (+0.519 standardizzato per fase) ed e' il
+    secondo tratto piu' affidabile dopo il volume — ma messo DENTRO il
+    prodotto peggiora la metrica standardizzata per fase di 0.110 +/- 0.008,
+    perche' viene diluito. Come asse separato no.
+
+    I due assi rispondono a domande diverse e vanno letti insieme:
+    l'esposizione e' in larga parte una scelta dell'allenatore (dove e quanto
+    profondo difendere), il contenimento e' esecuzione.
+
+    `containment`: se passi il containment appreso, l'asse 2 usa quello al
+    posto di `containment_failure` della pipeline. E' la configurazione
+    consigliata, e lo stress non va ricalcolato.
+    """
+    d = df
+    if containment is not None:
+        d = df.copy()
+        d["containment_failure"] = containment.reindex(df.index).fillna(0.5).values
+
+    weights = phase_weights(d, cfg)
+    rows = []
+    for (mid, team), g in d.groupby([cfg.col_match, "defending_team_id"]):
+        rows.append({
+            cfg.col_match: mid,
+            "defending_team_id": team,
+            "n_runs": len(g),
+            "esposizione": float(g["stress"].mean()),
+            "cedimento": phase_standardized(g, "containment_failure", weights, cfg),
+            "deep_phase_share": float(g[cfg.col_phase].isin(cfg.deep_phases).mean()),
+        })
+    per_match = pd.DataFrame(rows)
+
+    prof = per_match.groupby("defending_team_id").agg(
+        n_matches=(cfg.col_match, "nunique"),
+        n_runs=("n_runs", "sum"),
+        esposizione=("esposizione", "mean"),
+        cedimento=("cedimento", "mean"),
+        deep_phase_share=("deep_phase_share", "mean"),
+    ).reset_index()
+
+    # percentili dentro il campione: un profilo si legge in relativo, e con 8-13
+    # squadre il valore assoluto non dice niente a un allenatore
+    for c in ("esposizione", "cedimento"):
+        prof[f"{c}_pct"] = (prof[c].rank(pct=True) * 100).round(0)
+    return prof.sort_values("esposizione", ascending=False).reset_index(drop=True)
 
 
 def team_profile(
@@ -1420,6 +1707,40 @@ def split_half(
         mediana 0.3-0.5  segnale debole ma presente
         mediana < 0.3    rumore di campione
     """
+    corrs, n_common, n_teams = split_half_curves(
+        team_match, metric, n_iter=n_iter, seed=seed,
+        min_matches=min_matches, team_col=team_col, match_col=match_col,
+    )
+    ok = corrs[~np.isnan(corrs)]
+    med = float(np.median(ok)) if len(ok) else np.nan
+    return {
+        "metric": metric,
+        "n_teams": n_teams,
+        "n_valid_iter": len(ok),
+        "median": med,
+        "iqr_lo": float(np.percentile(ok, 25)) if len(ok) else np.nan,
+        "iqr_hi": float(np.percentile(ok, 75)) if len(ok) else np.nan,
+        "frac_positive": float((ok > 0).mean()) if len(ok) else np.nan,
+        "median_teams_per_split": int(np.median(n_common)) if n_common else 0,
+        "spearman_brown": spearman_brown(med),
+    }
+
+
+def split_half_curves(
+    team_match: pd.DataFrame,
+    metric: str,
+    n_iter: int = 400,
+    seed: int = 0,
+    min_matches: int = 3,
+    team_col: str = "defending_team_id",
+    match_col: str = "match_id",
+) -> tuple[np.ndarray, list[int], int]:
+    """Le n_iter correlazioni split-half, non solo la loro mediana.
+
+    Esposte perche' servono per il confronto appaiato: con lo stesso seed due
+    configurazioni vedono le STESSE divisioni, e la differenza va valutata
+    divisione per divisione. Vedi paired_split_half.
+    """
     rng = np.random.default_rng(seed)
     cnt = team_match.groupby(team_col)[match_col].nunique()
     ok = cnt[cnt >= min_matches].index
@@ -1435,21 +1756,106 @@ def split_half(
         common = a.index.intersection(b.index)
         n_common.append(len(common))
         if len(common) < 4:
+            corrs.append(np.nan)
             continue
-        c = a.loc[common].corr(b.loc[common])
-        if not np.isnan(c):
-            corrs.append(c)
+        corrs.append(a.loc[common].corr(b.loc[common]))
 
-    corrs = np.array(corrs)
+    # NaN conservati, non scartati: le due configurazioni di un confronto
+    # appaiato devono restare allineate posizione per posizione.
+    return np.array(corrs, dtype=float), n_common, len(ok)
+
+
+def spearman_brown(r: float, n_parts: float = 2.0) -> float:
+    """Affidabilita' del campione INTERO, da quella misurata su una meta'.
+
+        r_full = n*r / (1 + (n-1)*r)
+
+    La split-half divide i 20 match in due meta' da 10, quindi misura
+    l'affidabilita' di una stima su meta' campione. Quella che interessa e'
+    l'affidabilita' della stima sui 20 match, che e' piu' alta. Spearman-Brown
+    e' la correzione classica per il raddoppio della lunghezza del test.
+
+    Sulle metriche del progetto:
+
+        stress_per_run                      +0.724 -> +0.840
+        stress_per_run std. per fase        +0.534 -> +0.696
+        containment appreso                 +0.605 -> +0.754
+        containment appreso std. per fase   +0.519 -> +0.683
+        containment per subtype             +0.026 -> +0.051
+
+    Non e' un modo di gonfiare i numeri: e' la stima corretta della quantita'
+    che interessa, e infatti non salva il containment per subtype.
+    """
+    if not np.isfinite(r):
+        return float("nan")
+    den = 1.0 + (n_parts - 1.0) * r
+    if den == 0:
+        return float("nan")
+    return float(n_parts * r / den)
+
+
+def paired_split_half(
+    team_match_a: pd.DataFrame,
+    team_match_b: pd.DataFrame,
+    metric: str,
+    cfg: DRSConfig = DEFAULT,
+    n_iter: int = 400,
+    seed: int = 0,
+    min_matches: int = 3,
+) -> dict:
+    """Confronto APPAIATO fra due configurazioni sulla stessa metrica.
+
+    `team_match_b` e' la variante, `team_match_a` il riferimento: il delta e'
+    b - a, quindi positivo significa che la variante migliora.
+
+    PERCHE' APPAIATO. Le due configurazioni girano sulle stesse divisioni
+    (stesso seed), quindi i due risultati sono correlati e la differenza
+    elimina il rumore comune. Confrontare due mediane indipendenti butta via
+    quel guadagno e fa sembrare reali differenze che non lo sono: le mediane
+    di stress_per_run con e senza la struttura da tracking sono +0.749 e
+    +0.724, mentre il delta appaiato e' +0.008 +/- 0.010, cioe' nulla.
+
+    SOGLIA DI RILEVANZA. Con 8 squadre un delta sotto cfg.relevance_threshold
+    puo' avere l'intervallo che esclude lo zero ed essere irrilevante, quindi
+    il verdetto lo chiama 'trascurabile'.
+
+    Verdetti osservati sul progetto, metrica stress_per_run:
+        senza struttura da tracking   +0.008 +/- 0.010   trascurabile
+        senza terzo fattore           +0.007 +/- 0.011   trascurabile
+        geo_use_endpoint=True         -0.141 +/- 0.018   peggiora
+    """
+    a, _, _ = split_half_curves(team_match_a, metric, n_iter=n_iter, seed=seed,
+                                min_matches=min_matches)
+    b, _, _ = split_half_curves(team_match_b, metric, n_iter=n_iter, seed=seed,
+                                min_matches=min_matches)
+    n = min(len(a), len(b))
+    diff = b[:n] - a[:n]
+    valid = diff[~np.isnan(diff)]
+    if len(valid) == 0:
+        return {"metric": metric, "delta_mean": np.nan, "ci95": np.nan,
+                "frac_b_wins": np.nan, "verdict": "non calcolabile",
+                "median_a": np.nan, "median_b": np.nan, "n_valid_iter": 0}
+
+    mean = float(valid.mean())
+    ci = float(1.96 * valid.std(ddof=1) / np.sqrt(len(valid)))
+    if abs(mean) < cfg.relevance_threshold:
+        verdict = "trascurabile"
+    elif mean - ci > 0:
+        verdict = "migliora"
+    elif mean + ci < 0:
+        verdict = "peggiora"
+    else:
+        verdict = "indistinguibile"
+
     return {
         "metric": metric,
-        "n_teams": len(ok),
-        "n_valid_iter": len(corrs),
-        "median": float(np.median(corrs)) if len(corrs) else np.nan,
-        "iqr_lo": float(np.percentile(corrs, 25)) if len(corrs) else np.nan,
-        "iqr_hi": float(np.percentile(corrs, 75)) if len(corrs) else np.nan,
-        "frac_positive": float((corrs > 0).mean()) if len(corrs) else np.nan,
-        "median_teams_per_split": int(np.median(n_common)) if n_common else 0,
+        "median_a": float(np.nanmedian(a[:n])),
+        "median_b": float(np.nanmedian(b[:n])),
+        "delta_mean": mean,
+        "ci95": ci,
+        "frac_b_wins": float((valid > 0).mean()),
+        "verdict": verdict,
+        "n_valid_iter": len(valid),
     }
 
 
@@ -1880,6 +2286,7 @@ class DRSResult:
     team_match: pd.DataFrame | None = None
     validation: pd.DataFrame | None = None
     stability: pd.DataFrame | None = None
+    two_axis: pd.DataFrame | None = None
 
     def save(self, outdir: str | Path) -> Path:
         outdir = Path(outdir)
@@ -1892,6 +2299,8 @@ class DRSResult:
             self.validation.to_csv(outdir / "validation.csv", index=False)
         if self.stability is not None:
             self.stability.to_csv(outdir / "stability.csv", index=False)
+        if self.two_axis is not None:
+            self.two_axis.to_csv(outdir / "team_two_axis.csv", index=False)
         np.savez_compressed(
             outdir / "curves.npz",
             **{str(k): v[0] for k, v in self.curves_by_match.items()},
@@ -1971,12 +2380,26 @@ def run_pipeline(
     df = load_layer3(layer3_path, cfg)
     log(f"Layer 3: {len(df)} run su {df[cfg.col_match].nunique()} match")
 
+    learned = None
     if containment is None:
-        containment = (separation_curve_containment
-                       if cfg.use_curve_containment and has_curve_columns(df)
-                       else separation_gain_containment)
+        if cfg.containment_kind == "learned":
+            if not has_learned_columns(df):
+                raise ValueError(
+                    "containment_kind='learned' richiede il merge con "
+                    "tracking_features.csv (8 colonne numeriche vengono da la')."
+                )
+            # calcolato una volta e congelato: altrimenti compute_stress e
+            # dissociation_oos rifitterebbero il modello a ogni chiamata, e
+            # l'OOS lo rifitterebbe su un fold solo
+            learned = learned_containment(df, cfg)
+            containment = fixed_containment(learned)
+            containment.__name__ = "learned_containment"
+        elif cfg.use_curve_containment and has_curve_columns(df):
+            containment = separation_curve_containment
+        else:
+            containment = separation_gain_containment
     has_trk = cfg.use_tracking_structure and "str_recovery_rate" in df.columns
-    log(f"Containment: {containment.__name__}"
+    log(f"Containment: {getattr(containment, '__name__', 'custom')}"
         + ("   struttura: + tracking XY" if has_trk else ""))
 
     kind = cfg.prior_kind
@@ -2024,6 +2447,11 @@ def run_pipeline(
         curves_by_match=curves_match, curves_by_team=curves_team, team_match=tm,
     )
 
+    if cfg.col_phase in df.columns:
+        res.two_axis = team_two_axis(df, tm, cfg)
+        log(f"Profilo a due assi: {len(res.two_axis)} squadre "
+            f"(esposizione + contenimento standardizzato per fase)")
+
     if with_validation:
         try:
             import statsmodels.api as _sm  # noqa: F401
@@ -2048,15 +2476,19 @@ def run_pipeline(
             log(f"  {r.outcome:14s} OR={r.odds_ratio:.3f} "
                 f"[{r.ci_lo:.3f}, {r.ci_hi:.3f}]  p={r.p_value:.2e}")
 
-        res.stability = pd.DataFrame([
-            split_half(tm, m)
-            for m in ["n_runs", "drs_mean_all", "stress_per_run",
-                      "drs_mean_supported", "containment_failure_mean"]
-        ])
+        metrics = ["n_runs", "drs_mean_all", "stress_per_run",
+                   "drs_mean_supported", "containment_failure_mean", "prior_mean"]
+        metrics += [m for m in ("stress_per_run_phase_adj", "containment_phase_adj",
+                                "deep_phase_share") if m in tm.columns]
+        res.stability = pd.DataFrame([split_half(tm, m) for m in metrics])
         log("\nSplit-half stability (squadre con >=3 match)")
+        log(f"  {'metrica':28s} {'mediana':>8s} {'IQR':>17s} {'pos':>5s} {'Sp.-Brown':>10s}")
         for _, r in res.stability.iterrows():
-            log(f"  {r.metric:26s} mediana={r['median']:+.3f} "
-                f"IQR=[{r.iqr_lo:+.3f},{r.iqr_hi:+.3f}] pos={r.frac_positive:.0%}")
+            log(f"  {r.metric:28s} {r['median']:+8.3f} "
+                f"[{r.iqr_lo:+.3f},{r.iqr_hi:+.3f}] {r.frac_positive:5.0%} "
+                f"{r.spearman_brown:+10.3f}")
+        log("  Spearman-Brown = affidabilita' sui 20 match interi; la mediana e'")
+        log("  misurata su meta' campione, quindi sottostima quella che interessa.")
 
     return res
 
@@ -2822,7 +3254,8 @@ def main():
                   geo_use_endpoint=GEO_USE_ENDPOINT,
                   geo_ball_gate=GEO_BALL_GATE,
                   use_tracking_structure=USE_TRACKING_STRUCTURE,
-                  use_curve_containment=USE_CURVE_CONTAINMENT)
+                  use_curve_containment=USE_CURVE_CONTAINMENT,
+                  containment_kind=CONTAINMENT_KIND)
 
     layer3 = LAYER3_PATH
     if TRACKING_FEATURES is not None:
@@ -2847,6 +3280,11 @@ def main():
 
     res = run_pipeline(layer3, cfg=cfg, structural=STRUCTURAL, with_oos=RUN_OOS)
     out = res.save(OUT_DIR)
+    if res.two_axis is not None:
+        print("\nProfilo a due assi (alto = peggio su entrambi gli assi)")
+        cols = ["defending_team_id", "n_matches", "n_runs", "esposizione",
+                "cedimento", "deep_phase_share"]
+        print(res.two_axis[cols].round(3).to_string(index=False))
     print(f"\nSalvato in {out.resolve()}")
 
     if PLOT_MATCH is not None:
