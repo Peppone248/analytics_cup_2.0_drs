@@ -54,3 +54,12 @@ out/**/*.npz
 out/**/*.parquet
 *.pkl
 *.joblib
+
+# tracking XY grezzo scaricato dagli oggetti LFS (1.7 GB, rigenerabile)
+data/tracking_raw/
+
+# output pesanti e rigenerabili dei run (i CSV di risultato restano tracciati)
+out/*/_layer3_tracking.csv
+out/*/curves.npz
+out/*/runs_with_stress.parquet
+out/*/priors.csv

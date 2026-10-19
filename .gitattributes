@@ -1,0 +1,22 @@
+# Normalizzazione line-ending.
+#
+# Senza questo file il working tree su Windows ha CRLF mentre l'indice ha LF,
+# e `git status` segnala ~130 file modificati che in realta' non lo sono: il
+# diff vero resta invisibile sotto il rumore. `text=auto` fa normalizzare a
+# git in memoria durante il confronto, quindi le modifiche finte scompaiano
+# senza riscrivere nulla nel repo.
+* text=auto
+
+# File binari: nessuna conversione, nessun tentativo di diff testuale.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary
+*.zip   binary
+*.parquet binary
+*.xlsx  binary
+
+# I *.jsonl del tracking sono puntatori git-lfs committati come testo
+# (nessun filtro lfs e' mai stato configurato in questo repo): restano
+# gestiti come testo normale.
