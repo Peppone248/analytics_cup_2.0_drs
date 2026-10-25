@@ -1,56 +1,51 @@
-# Global/macOS
-.DS_Store
-.claude/
-Thumbs.db
+# =========================================================================
+# drsframe — branch DRS_frame
+# =========================================================================
 
-# Python
+# --- Sistema / IDE --------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/
+.agents/
+
+# --- Python ---------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
+.venv/
 venv/
-.venv
 .env
 .env.local
+*.egg-info/
+build/
+dist/
 .pytest_cache/
 .ruff_cache/
 
-# IDEs
-.idea/
-.vscode/
+# --- Dati SkillCorner -----------------------------------------------------
+# drsframe legge l'opendata grezzo: data/matches/{id}/ con tracking .jsonl,
+# match.json, dynamic_events.csv, phases_of_play.csv (vedi drsframe/io.py).
+# Non si versiona: reproduce.sh lo scarica da github.com/SkillCorner/opendata.
+# Nota: i file gia' tracciati restano tali finche' non si esegue
+# `git rm -r --cached data/`.
+data/
 
-# Project-specific
-archive/
-notebooks/exploratory/
-DRS/scratch/
-
-.agents/
-
-# MkDocs
-site/
-.cache/
-
-# -------------------------------------------------------------------------
-# Dati SkillCorner
-#
-# Il tracking raw e' ~2 GB e sotto licenza: resta fuori dalla repo, e il
-# percorso si configura con DRS_DATA_DIR (vedi DRS/config.py).
-#
-# I due Layer 3 derivati (1.1 MB + 2.7 MB) restano invece TRACCIATI: sono
-# l'input di DRS_t/drst.py, quindi chi clona riproduce l'intera pipeline
-# DRS(t) senza scaricare il raw. matches.json e' l'indice dei match, 7 KB.
-# -------------------------------------------------------------------------
-data/*
-!data/matches.json
-!data/matches/
-data/matches/*
-!data/matches/layer3_all_matches.csv
-!data/matches/layer3_enriched.csv
-
-# -------------------------------------------------------------------------
-# Output: CSV, JSON di config e figure si committano (sono il risultato
-# condiviso e sono piccoli). I binari grossi no: si rigenerano col codice.
-# -------------------------------------------------------------------------
-out/**/*.npz
-out/**/*.parquet
+# --- Cache e output della pipeline ----------------------------------------
+# cache/ : tracking parsato (.npz) e result.pkl
+# out/   : tabelle, validazione, frames.parquet, clip e video staff
+# work/  : cartella di default di reproduce.sh
+# Le figure che vanno nel README stanno in docs/ e si committano.
+cache/
+out/
+work/
+*.npz
+*.parquet
 *.pkl
 *.joblib
+
+# --- Materiale locale non pubblicato --------------------------------------
+archive/
+scratch/
+notebooks/exploratory/
